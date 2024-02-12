@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Video and Image Processing</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/aws-sdk/2.1171.0/aws-sdk.min.js"></script>
+</head>
+<body>
+    <h1>Video and Image Processing</h1>
+
+    <label for="videoInput">Upload Video:</label>
+    <input type="file" id="videoInput" accept="video/*">
+
+    <label for="imageInput">Upload Image:</label>
+    <input type="file" id="imageInput" accept="image/*">
+
+    <label for="descriptors">Enter Descriptors (separated by commas):</label>
+    <textarea id="descriptors" placeholder="e.g., blue shirt, smiling"></textarea>
+
+    <button onclick="processVideo()">Process Video</button>
+
+    <div id="processingResults"></div>
+
+    <script>
+        const apiBaseUrl = 'https://pz4cb4zbz0.execute-api.us-east-2.amazonaws.com/dev';
+
+        let uploadedVideoPath = '';
+        let uploadedImagePath = '';
+
+        document.getElementById('videoInput').addEventListener('change', async (event) => {
+            const file = event.target.files[0];
+            if (file) {
+                uploadedVideoPath = await getPresignedUrlAndUpload(file, `${apiBaseUrl}/uploadVideo`);
+            }
+        });
+
+        document.getElementById('imageInput').addEventListener('change', async (event) => {
+            const file = event.target.files[0];
+            if (file) {
+                uploadedImagePath = await getPresignedUrlAndUpload(file, `${apiBaseUrl}/uploadImage`);
+            }
+        });
+
+        async function getPresignedUrlAndUpload(file, apiEndpoint) {
+        const requestBody = JSON.stringify({ filename: file.name, fileType: file.type });
+        console.log("Sending request body:", requestBody);
+        try {
+            const response = await fetch(apiEndpoint, {
+                method: 'POST',
+                body: requestBody,
+                headers: { 'Content-Type': 'application/json' }
+            });
+
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+
+            const data = await response.json();
+            console.log("Dis is data:", data);
+
+            // Parse the 'body' within the 'data' to get the actual response content
+            const responseBody = JSON.parse(data.body);
+
+            if (!responseBody.preSignedUrl) {
+                console.error('No presigned URL in response:', responseBody);
+                return null;
+            }
+
+            await uploadFileToS3(file, responseBody.preSignedUrl);
+            return `${apiEndpoint.includes('uploadVideo') ? 'videos' : 'images'}/${file.name}`;
+        } catch (error) {
+            console.error('Error fetching presigned URL or uploading file:', error);
+            return null;
+        }
+         }
+
+
+        async function uploadFileToS3(file, presignedUrl) {
+            try {
+                const response = await fetch(presignedUrl, {
+                    method: 'PUT',
+                    body: file,
+                    headers: { 'Content-Type': file.type }
+                });
+
+                if (!response.ok) {
+                    console.error('Error uploading file to S3:', response);
+                } else {
+                    console.log('File uploaded successfully:', response);
+                }
+            } catch (error) {
+                console.error('Error in PUT request to S3:', error);
+            }
+        }
+
+        async function processVideo() {
+            const descriptors = document.getElementById('descriptors').value.trim().split(',');
+            
+            if (!uploadedVideoPath || !uploadedImagePath) {
+                console.error('Upload video and image first.');
+                return;
+            }
+
+            try {
+                // Extract video segments with descriptors
+                let response = await fetch(`${apiBaseUrl}/extractVideoSegments`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ 
+                    videoPath: uploadedVideoPath,
+                    descriptors: descriptors 
+                    })
+                });
+                let segments = await response.json();
+
+                // Compare faces in each segment
+                for (const segment of segments) {
+                    response = await fetch(`${apiBaseUrl}/compareFaces`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            uploadedImage: segment.encodedFrame, // assuming base64 encoded frame
+                            referenceImagePath: uploadedImagePath
+                        })
+                    });
+                    const compareResult = await response.json();
+                    displayResult(`Segment ${segment.index} similarity score: ${compareResult.similarityScore}`);
+                }
+            } catch (error) {
+                console.error('Error processing video:', error);
+            }
+        }
+
+        function displayResult(message) {
+            const resultsDiv = document.getElementById('processingResults');
+            const resultElement = document.createElement('p');
+            resultElement.textContent = message;
+            resultsDiv.appendChild(resultElement);
+        }
+    </script>
+</body>
+</html>
